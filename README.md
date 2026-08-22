@@ -10,7 +10,7 @@ Matrix Tunnel Proxy is a self-hosted TCP/UDP reverse-tunnel system with three pr
 
 ## How it works
 
-![Matrix Tunnel Proxy architecture: Controller management plane and Server-to-Client encrypted data tunnel](docs/images/matrix-tunnel-proxy-architecture.png)
+![Matrix Tunnel Proxy architecture: Controller management plane and Server-to-Client encrypted data tunnel](docs/images/matrix-tunnel-proxy-architecture-en.png)
 
 Controller manages identities and configuration without relaying application traffic. Public TCP/UDP traffic enters through Server, crosses the encrypted TLS 1.3 tunnel to Client, and is then forwarded to the intranet target service.
 
