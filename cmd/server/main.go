@@ -433,6 +433,9 @@ func (mapping *udpMapping) run() {
 }
 
 func (mapping *udpMapping) forward(remote net.Addr, payload []byte) {
+	if !mappingAllows(mapping.item, remote) {
+		return
+	}
 	session := mapping.hub.get(mapping.item.ClientID)
 	if session == nil {
 		return
@@ -516,6 +519,9 @@ func (manager *mappingManager) acceptMapping(listener net.Listener, item control
 }
 func (manager *mappingManager) forward(item controller.Mapping, publicConnection net.Conn) {
 	defer publicConnection.Close()
+	if !mappingAllows(item, publicConnection.RemoteAddr()) {
+		return
+	}
 	session := manager.hub.get(item.ClientID)
 	if session == nil {
 		return

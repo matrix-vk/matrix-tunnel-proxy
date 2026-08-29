@@ -407,6 +407,9 @@ func originalUDPDestination(control []byte) (*net.UDPAddr, error) {
 }
 
 func (mapper *linuxFullMapper) forwardUDP(remote, original *net.UDPAddr, payload []byte) {
+	if !mappingAllows(mapper.spec.Mapping, remote) {
+		return
+	}
 	session := mapper.manager.hub.get(mapper.spec.Mapping.ClientID)
 	if session == nil {
 		return

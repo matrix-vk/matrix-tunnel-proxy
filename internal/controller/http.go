@@ -505,13 +505,24 @@ func (a *App) updateMappingPriority(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Priority int `json:"priority"`
+		Priority   *int    `json:"priority"`
+		AccessMode *string `json:"accessMode"`
+		AllowedIPs string  `json:"allowedIps"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		writeError(w, http.StatusBadRequest, errors.New("invalid JSON body"))
 		return
 	}
-	if err := a.store.UpdateMappingPriority(r.Context(), r.PathValue("serverId"), r.PathValue("mappingId"), request.Priority); err != nil {
+	var err error
+	if request.AccessMode != nil {
+		err = a.store.UpdateMappingAccess(r.Context(), r.PathValue("serverId"), r.PathValue("mappingId"), *request.AccessMode, request.AllowedIPs)
+	} else if request.Priority != nil {
+		err = a.store.UpdateMappingPriority(r.Context(), r.PathValue("serverId"), r.PathValue("mappingId"), *request.Priority)
+	} else {
+		writeError(w, http.StatusBadRequest, errors.New("priority or accessMode is required"))
+		return
+	}
+	if err != nil {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}

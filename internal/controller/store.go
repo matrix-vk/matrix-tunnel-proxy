@@ -77,6 +77,8 @@ type Mapping struct {
 	TargetHost    string    `json:"targetHost"`
 	TargetPort    int       `json:"targetPort"`
 	ExcludedPorts string    `json:"excludedPorts,omitempty"`
+	AccessMode    string    `json:"accessMode"`
+	AllowedIPs    string    `json:"allowedIps,omitempty"`
 	Priority      int       `json:"priority"`
 	Status        string    `json:"status"`
 	OccupiedBy    string    `json:"occupiedByMappingId,omitempty"`
@@ -157,6 +159,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			status TEXT NOT NULL DEFAULT 'pending',
 			occupied_by_mapping_id TEXT,
 			excluded_ports TEXT NOT NULL DEFAULT '',
+			access_mode TEXT NOT NULL DEFAULT 'public',
+			allowed_ips TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS audit_logs (
@@ -238,6 +242,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := ensureColumn(ctx, s.db, "mappings", "excluded_ports TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, s.db, "mappings", "access_mode TEXT NOT NULL DEFAULT 'public'"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, s.db, "mappings", "allowed_ips TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	return nil
@@ -573,7 +583,7 @@ func (s *Store) ServerConfig(ctx context.Context, serverID string) (ServerConfig
 }
 
 func (s *Store) ListMappings(ctx context.Context, serverID string) ([]Mapping, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, server_id, client_id, public_ip, protocol, mapping_type, COALESCE(public_port, 0), target_host, COALESCE(target_port, 0), COALESCE(excluded_ports, ''), priority, status, COALESCE(occupied_by_mapping_id, ''), created_at FROM mappings WHERE server_id = ? ORDER BY priority DESC, created_at ASC`, serverID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, server_id, client_id, public_ip, protocol, mapping_type, COALESCE(public_port, 0), target_host, COALESCE(target_port, 0), COALESCE(excluded_ports, ''), COALESCE(access_mode, 'public'), COALESCE(allowed_ips, ''), priority, status, COALESCE(occupied_by_mapping_id, ''), created_at FROM mappings WHERE server_id = ? ORDER BY priority DESC, created_at ASC`, serverID)
 	if err != nil {
 		return nil, err
 	}
@@ -582,7 +592,7 @@ func (s *Store) ListMappings(ctx context.Context, serverID string) ([]Mapping, e
 	for rows.Next() {
 		var item Mapping
 		var created string
-		if err := rows.Scan(&item.ID, &item.ServerID, &item.ClientID, &item.PublicIP, &item.Protocol, &item.MappingType, &item.PublicPort, &item.TargetHost, &item.TargetPort, &item.ExcludedPorts, &item.Priority, &item.Status, &item.OccupiedBy, &created); err != nil {
+		if err := rows.Scan(&item.ID, &item.ServerID, &item.ClientID, &item.PublicIP, &item.Protocol, &item.MappingType, &item.PublicPort, &item.TargetHost, &item.TargetPort, &item.ExcludedPorts, &item.AccessMode, &item.AllowedIPs, &item.Priority, &item.Status, &item.OccupiedBy, &created); err != nil {
 			return nil, err
 		}
 		item.CreatedAt, _ = time.Parse(time.RFC3339, created)
@@ -649,6 +659,35 @@ func NormalizePortSpec(spec string) (string, error) {
 	return strings.Join(parts, ","), nil
 }
 
+// NormalizeAllowedIPs accepts individual IPv4/IPv6 addresses and CIDR ranges,
+// removes duplicates, and returns a stable comma-separated representation.
+func NormalizeAllowedIPs(spec string) (string, error) {
+	seen := make(map[string]struct{})
+	result := make([]string, 0)
+	for _, raw := range strings.FieldsFunc(spec, func(r rune) bool { return r == ',' || r == '\n' || r == '\r' || r == ';' }) {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if ip := net.ParseIP(value); ip != nil {
+			value = ip.String()
+		} else if _, network, err := net.ParseCIDR(value); err == nil {
+			value = network.String()
+		} else {
+			return "", fmt.Errorf("invalid allowed IP or CIDR %q", value)
+		}
+		if _, exists := seen[value]; !exists {
+			seen[value] = struct{}{}
+			result = append(result, value)
+		}
+	}
+	if len(result) == 0 {
+		return "", errors.New("IP allow-list cannot be empty")
+	}
+	sort.Strings(result)
+	return strings.Join(result, ","), nil
+}
+
 func (s *Store) CreateMapping(ctx context.Context, item Mapping) (Mapping, error) {
 	if item.ID == "" || item.ServerID == "" || item.ClientID == "" || item.TargetHost == "" {
 		return Mapping{}, errors.New("invalid mapping")
@@ -671,6 +710,20 @@ func (s *Store) CreateMapping(ctx context.Context, item Mapping) (Mapping, error
 	} else {
 		return Mapping{}, errors.New("mapping type must be port or full")
 	}
+	if item.AccessMode == "" {
+		item.AccessMode = "public"
+	}
+	if item.AccessMode == "public" {
+		item.AllowedIPs = ""
+	} else if item.AccessMode == "allowlist" {
+		normalized, err := NormalizeAllowedIPs(item.AllowedIPs)
+		if err != nil {
+			return Mapping{}, err
+		}
+		item.AllowedIPs = normalized
+	} else {
+		return Mapping{}, errors.New("access mode must be public or allowlist")
+	}
 	item.CreatedAt = time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -681,7 +734,7 @@ func (s *Store) CreateMapping(ctx context.Context, item Mapping) (Mapping, error
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM clients WHERE id = ? AND server_id = ?`, item.ClientID, item.ServerID).Scan(&exists); err != nil || exists != 1 {
 		return Mapping{}, errors.New("client is not bound to this server")
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO mappings (id, server_id, client_id, public_ip, protocol, mapping_type, public_port, target_host, target_port, excluded_ports, priority, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`, item.ID, item.ServerID, item.ClientID, item.PublicIP, item.Protocol, item.MappingType, nullablePort(item.PublicPort), item.TargetHost, nullablePort(item.TargetPort), item.ExcludedPorts, item.Priority, item.CreatedAt.Format(time.RFC3339)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO mappings (id, server_id, client_id, public_ip, protocol, mapping_type, public_port, target_host, target_port, excluded_ports, access_mode, allowed_ips, priority, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`, item.ID, item.ServerID, item.ClientID, item.PublicIP, item.Protocol, item.MappingType, nullablePort(item.PublicPort), item.TargetHost, nullablePort(item.TargetPort), item.ExcludedPorts, item.AccessMode, item.AllowedIPs, item.Priority, item.CreatedAt.Format(time.RFC3339)); err != nil {
 		return Mapping{}, err
 	}
 	if err := s.resolveMappings(ctx, tx, item.ServerID); err != nil {
@@ -759,6 +812,44 @@ func (s *Store) UpdateMappingPriority(ctx context.Context, serverID, mappingID s
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_logs (action, resource_type, resource_id, detail, user_id, created_at) VALUES ('priority', 'mapping', ?, ?, ?, ?)`, mappingID, strconv.Itoa(priority), auditUserID(ctx), time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) UpdateMappingAccess(ctx context.Context, serverID, mappingID, accessMode, allowedIPs string) error {
+	accessMode = strings.ToLower(strings.TrimSpace(accessMode))
+	if accessMode == "public" {
+		allowedIPs = ""
+	} else if accessMode == "allowlist" {
+		var err error
+		allowedIPs, err = NormalizeAllowedIPs(allowedIPs)
+		if err != nil {
+			return err
+		}
+	} else {
+		return errors.New("access mode must be public or allowlist")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE mappings SET access_mode = ?, allowed_ips = ? WHERE id = ? AND server_id = ?`, accessMode, allowedIPs, mappingID, serverID)
+	if err != nil {
+		return err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return errors.New("mapping not found")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE servers SET config_revision = config_revision + 1 WHERE id = ?`, serverID); err != nil {
+		return err
+	}
+	detail := accessMode
+	if allowedIPs != "" {
+		detail += " " + allowedIPs
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_logs (action, resource_type, resource_id, detail, user_id, created_at) VALUES ('firewall', 'mapping', ?, ?, ?, ?)`, mappingID, detail, auditUserID(ctx), time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -256,11 +256,14 @@ TCP 和 UDP 端口映射属于某个服务端：
 ```text
 GET  /api/v1/servers/{serverId}/mappings
 POST /api/v1/servers/{serverId}/mappings
+PATCH /api/v1/servers/{serverId}/mappings/{mappingId}
 ```
 
 端口映射的 POST 请求使用 `mappingType: "port"`，并包含 `clientId`、`protocol`（`tcp` 或 `udp`）、`publicIp`、`publicPort`、`targetHost`、`targetPort` 和 `priority`。
 
 全映射使用 `mappingType: "full"`、一个明确的 `publicIp`、`targetHost`、可选的 `excludedPorts`（例如 `22,3389,8000-8010`）以及 `priority`。TCP 和 UDP 都会在客户端一侧保留原始目标端口。TCP 22（SSH）和 3389（远程桌面）始终默认保留，防止启用全映射后失去服务器管理连接。
+
+每条映射默认公开访问。可以在映射列表点击“防火墙”，继续公开访问，或使用 IP 白名单限制来源。白名单支持单个 IPv4/IPv6 地址和 CIDR 网段，例如 `203.0.113.10,198.51.100.0/24,2001:db8::/32`。对应 PATCH 请求使用 `accessMode: "public"`，或使用 `accessMode: "allowlist"` 并传入 `allowedIps`。
 
 对于相同协议、公网 IP 和端口，优先级最高的映射标记为 `effective`，较低优先级映射标记为 `occupied`。高优先级端口映射可以覆盖全映射中的单个端口。全映射会自动保留服务端隧道 TCP 端口以及手工配置的保留端口。
 

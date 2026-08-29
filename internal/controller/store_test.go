@@ -91,6 +91,27 @@ func TestMappingPriorityAndWildcardConflict(t *testing.T) {
 	if statuses["map_specific"] != "effective" || statuses["map_wildcard"] != "occupied" {
 		t.Fatalf("statuses after priority update: %#v", statuses)
 	}
+	if err := store.UpdateMappingAccess(context.Background(), "srv_test", "map_specific", "allowlist", "203.0.113.8; 198.51.100.0/24\n203.0.113.8"); err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.ListMappings(context.Background(), "srv_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.ID == "map_specific" && (item.AccessMode != "allowlist" || item.AllowedIPs != "198.51.100.0/24,203.0.113.8") {
+			t.Fatalf("unexpected mapping access: %#v", item)
+		}
+	}
+}
+
+func TestNormalizeAllowedIPsRejectsInvalidInput(t *testing.T) {
+	if _, err := NormalizeAllowedIPs("not-an-ip"); err == nil {
+		t.Fatal("invalid allow-list was accepted")
+	}
+	if _, err := NormalizeAllowedIPs("  "); err == nil {
+		t.Fatal("empty allow-list was accepted")
+	}
 }
 
 func TestFullMappingPriorityAndReservedPorts(t *testing.T) {

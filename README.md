@@ -254,9 +254,12 @@ TCP and UDP port mappings belong to a Server:
 ```text
 GET  /api/v1/servers/{serverId}/mappings
 POST /api/v1/servers/{serverId}/mappings
+PATCH /api/v1/servers/{serverId}/mappings/{mappingId}
 ```
 
 For a port mapping, the POST body uses `mappingType: "port"`, `clientId`, `protocol` (`tcp` or `udp`), `publicIp`, `publicPort`, `targetHost`, `targetPort`, and `priority`. For a full mapping, use `mappingType: "full"`, one specific `publicIp`, `targetHost`, optional `excludedPorts` such as `22,3389,8000-8010`, and `priority`; both TCP and UDP retain their original destination port on the Client side. TCP 22 (SSH) and 3389 (RDP) are always reserved by default to prevent a full mapping from cutting off server administration access.
+
+Mappings are publicly accessible by default. Use the Firewall button on a mapping to keep public access or restrict source addresses with an allow-list. Allow-lists accept individual IPv4/IPv6 addresses and CIDR ranges, such as `203.0.113.10,198.51.100.0/24,2001:db8::/32`. The equivalent PATCH body uses `accessMode: "public"`, or `accessMode: "allowlist"` together with `allowedIps`.
 
 For a given protocol, public IP, and port, the highest-priority mapping is marked `effective`; lower-priority mappings are marked `occupied`. A higher-priority port mapping can override one port inside a full mapping. A full mapping automatically reserves the Server tunnel's TCP port in addition to the configured reserved ports.
 

@@ -5,7 +5,7 @@ type User = { id: string; username: string; isAdmin: boolean; isSuperAdmin: bool
 type AuthStatus = { needsDatabaseSetup: boolean; needsSetup: boolean; siteName: string; user?: User };
 type Server = { id: string; name: string; endpoint: string; status: string; configRevision: number; publicIps: string[]; platform: string; architecture: string; fullMapping: boolean };
 type Client = { id: string; serverId: string; name: string; platform: string; status: string };
-type Mapping = { id: string; serverId: string; clientId: string; protocol: "tcp" | "udp" | "both"; mappingType: "port" | "full"; publicIp: string; publicPort: number; targetHost: string; targetPort: number; excludedPorts?: string; priority: number; status: string; occupiedByMappingId?: string };
+type Mapping = { id: string; serverId: string; clientId: string; protocol: "tcp" | "udp" | "both"; mappingType: "port" | "full"; publicIp: string; publicPort: number; targetHost: string; targetPort: number; excludedPorts?: string; accessMode: "public" | "allowlist"; allowedIps?: string; priority: number; status: string; occupiedByMappingId?: string };
 type AuditLog = { id: number; action: string; resourceType: string; resourceId: string; detail: string; createdAt: string };
 type DownloadTarget = { role: "server"; server: Server } | { role: "client"; client: Client };
 
@@ -220,7 +220,7 @@ function Dashboard({ servers, clients, events, onlineServers, totalServers, onli
 }
 
 function auditEventTitle(event: AuditLog, servers: Server[], clients: Client[]) {
-  const actions: Record<string, string> = { create: "创建", download: "下载", delete: "删除", priority: "调整优先级", rotate: "轮换" };
+  const actions: Record<string, string> = { create: "创建", download: "下载", delete: "删除", priority: "调整优先级", firewall: "设置防火墙", rotate: "轮换" };
   const resources: Record<string, string> = { server: "服务端", client: "客户端", mapping: "映射", "server-certificate": "服务端证书" };
   const recordName = event.resourceType === "server" ? servers.find((server) => server.id === event.resourceId)?.name : event.resourceType === "client" ? clients.find((client) => client.id === event.resourceId)?.name : "";
   const detail = recordName || event.detail;
@@ -245,6 +245,8 @@ function MappingManager({ servers }: { servers: Server[] }) {
   const [mappings, setMappings] = useState<Mapping[]>([]);
   const [message, setMessage] = useState("");
   const [mappingType, setMappingType] = useState<"port" | "full">("port");
+  const [firewallMapping, setFirewallMapping] = useState<Mapping | null>(null);
+  const [firewallError, setFirewallError] = useState("");
   const selectedServer = servers.find((server) => server.id === serverID);
   const canFullMap = selectedServer?.platform !== "darwin";
   const load = async (id: string) => {
@@ -273,7 +275,16 @@ function MappingManager({ servers }: { servers: Server[] }) {
     if (!response.ok) { setMessage("修改优先级失败"); return; }
     setMessage(`优先级已调整为 ${priority}。`); await load(serverID);
   };
-  return <section className="panel mapping-panel">
+  const saveFirewall = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!firewallMapping) return;
+    const form = new FormData(event.currentTarget);
+    const response = await fetch(`/api/v1/servers/${serverID}/mappings/${firewallMapping.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accessMode: form.get("accessMode"), allowedIps: form.get("allowedIps") }) });
+    const payload = await response.json().catch(() => ({})) as { error?: string };
+    if (!response.ok) { setFirewallError(payload.error ?? "防火墙设置保存失败"); return; }
+    setFirewallError(""); setFirewallMapping(null); setMessage("防火墙设置已保存，服务端下次拉取配置后生效。"); await load(serverID);
+  };
+  return <><section className="panel mapping-panel">
     <div className="panel-head"><h2>映射配置</h2><select value={serverID} onChange={(event) => setServerID(event.target.value)}>{servers.map((server) => <option value={server.id} key={server.id}>{server.name}</option>)}</select></div>
     {message && <p className="mapping-message">{message}</p>}
     {clients.length === 0 ? <p className="empty">请先在这台服务端下创建客户端。</p> : <form className="mapping-form" onSubmit={create}>
@@ -291,9 +302,15 @@ function MappingManager({ servers }: { servers: Server[] }) {
       <strong>{mapping.mappingType === "full" ? `全映射 · ${mapping.publicIp}` : `${mapping.protocol.toUpperCase()} · ${mapping.publicIp}:${mapping.publicPort}`}</strong>
       <span>{mapping.mappingType === "full" ? `→ ${mapping.targetHost} · 保留 ${mapping.excludedPorts || "无"}` : `→ ${mapping.targetHost}:${mapping.targetPort}`}</span>
       <span>优先级 {mapping.priority} <button className="compact" onClick={() => void setPriority(mapping, mapping.priority + 1)}>＋</button><button className="compact" onClick={() => void setPriority(mapping, mapping.priority - 1)}>－</button></span>
-      <span className={`status ${mapping.status === "effective" ? "online" : ""}`}>{mapping.status === "effective" ? "生效" : "被占用"} <button className="danger compact" onClick={() => void remove(mapping)}>删除</button></span>
+      <span className="mapping-access">{mapping.accessMode === "allowlist" ? `仅限 ${mapping.allowedIps}` : "公开访问"}</span>
+      <span className={`status ${mapping.status === "effective" ? "online" : ""}`}>{mapping.status === "effective" ? "生效" : "被占用"} <button className="compact" onClick={() => { setFirewallError(""); setFirewallMapping(mapping); }}>防火墙</button><button className="danger compact" onClick={() => void remove(mapping)}>删除</button></span>
     </div>)}</div>
-  </section>;
+  </section>{firewallMapping && <FirewallDialog mapping={firewallMapping} error={firewallError} onClose={() => setFirewallMapping(null)} onSubmit={saveFirewall} />}</>;
+}
+
+function FirewallDialog({ mapping, error, onClose, onSubmit }: { mapping: Mapping; error: string; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
+  const [mode, setMode] = useState<"public" | "allowlist">(mapping.accessMode || "public");
+  return <div className="modal-backdrop"><form className="modal" onSubmit={onSubmit}><div className="modal-head"><h2>映射防火墙</h2><button type="button" className="link" onClick={onClose}>关闭</button></div><p className="modal-note">{mapping.mappingType === "full" ? mapping.publicIp : `${mapping.protocol.toUpperCase()} ${mapping.publicIp}:${mapping.publicPort}`}</p>{error && <p className="form-error">{error}</p>}<label>访问方式<select name="accessMode" value={mode} onChange={(event) => setMode(event.target.value as "public" | "allowlist")}><option value="public">公开访问</option><option value="allowlist">仅允许指定 IP</option></select></label>{mode === "allowlist" && <label>允许访问的 IP 或网段<textarea name="allowedIps" defaultValue={mapping.allowedIps?.replaceAll(",", "\n")} placeholder={"203.0.113.10\n198.51.100.0/24\n2001:db8::/32"} required /><small>每行一个，也可用逗号分隔；支持 IPv4、IPv6 和 CIDR 网段。</small></label>}<div className="modal-foot"><button type="button" onClick={onClose}>取消</button><button className="primary">保存设置</button></div></form></div>;
 }
 function Clients({ servers, clients, loading, onCreate, onDownload, onDelete }: { servers: Server[]; clients: Client[]; loading: boolean; onCreate: () => void; onDownload: (client: Client) => void; onDelete: (client: Client) => void }) { const names = new Map(servers.map((server) => [server.id, server.name])); return <><header><div><h1>客户端</h1><p>创建客户端记录后可单独下载绑定包，无须手动填写连接信息。</p></div><button className="primary" disabled={!servers.length} onClick={onCreate}>创建客户端</button></header><section className="panel"><div className="table-head"><span>名称</span><span>绑定服务端</span><span>平台</span><span>状态/操作</span></div>{loading ? <p className="empty">加载中…</p> : clients.length === 0 ? <p className="empty">{servers.length ? "还没有客户端，请先创建客户端记录。" : "请先创建服务端。"}</p> : clients.map((client) => <div className="table-row" key={client.id}><div><strong>{client.name}</strong><small>{client.id}</small></div><span>{names.get(client.serverId) ?? client.serverId}</span><span>{client.platform === "pending" ? "未下载" : client.platform}</span><span className={`status ${client.status}`}>{client.status === "online" ? "在线" : "离线"} <button className="compact" onClick={() => onDownload(client)}>下载</button> <button className="danger compact" onClick={() => onDelete(client)}>删除</button></span></div>)}</section></>; }
 function Audit() {
@@ -301,7 +318,7 @@ function Audit() {
   const [error, setError] = useState("");
   const load = async () => { const response = await fetch("/api/v1/audit-logs?limit=200"); if (!response.ok) throw new Error("无法加载审计日志"); setItems(await response.json() as AuditLog[]); };
   useEffect(() => { void load().catch((requestError) => setError(requestError.message)); }, []);
-  const actionName: Record<string, string> = { create: "创建", download: "下载", delete: "删除", priority: "调整优先级", rotate: "轮换证书" };
+  const actionName: Record<string, string> = { create: "创建", download: "下载", delete: "删除", priority: "调整优先级", firewall: "设置防火墙", rotate: "轮换证书" };
   const resourceName: Record<string, string> = { server: "服务端", client: "客户端", mapping: "映射" };
   return <><header><div><h1>审计日志</h1><p>创建、下载、配置变更和撤销操作都会留痕。</p></div><button onClick={() => void load()}>刷新</button></header><section className="panel"><div className="audit-head"><span>时间</span><span>操作</span><span>资源</span><span>详情</span></div>{error ? <p className="empty">{error}</p> : items.length === 0 ? <p className="empty">暂无审计记录。</p> : items.map((item) => <div className="audit-row" key={item.id}><span>{new Date(item.createdAt).toLocaleString()}</span><strong>{actionName[item.action] ?? item.action}</strong><span>{resourceName[item.resourceType] ?? item.resourceType}<small>{item.resourceId}</small></span><span>{item.detail || "—"}</span></div>)}</section></>;
 }

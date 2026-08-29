@@ -148,7 +148,7 @@ func mappingSignature(item controller.Mapping, spec fullMappingSpec) string {
 	if item.ID == "" {
 		return ""
 	}
-	return strings.Join([]string{item.MappingType, item.Protocol, item.PublicIP, strconv.Itoa(item.PublicPort), item.ClientID, item.TargetHost, strconv.Itoa(item.TargetPort), formatPortRanges(spec.ExcludedTCP), formatPortRanges(spec.ExcludedUDP)}, "|")
+	return strings.Join([]string{item.MappingType, item.Protocol, item.PublicIP, strconv.Itoa(item.PublicPort), item.ClientID, item.TargetHost, strconv.Itoa(item.TargetPort), item.AccessMode, item.AllowedIPs, formatPortRanges(spec.ExcludedTCP), formatPortRanges(spec.ExcludedUDP)}, "|")
 }
 
 type fullMapper interface{ io.Closer }
