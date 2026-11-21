@@ -248,6 +248,7 @@ function MappingManager({ servers }: { servers: Server[] }) {
   const [firewallMapping, setFirewallMapping] = useState<Mapping | null>(null);
   const [firewallError, setFirewallError] = useState("");
   const selectedServer = servers.find((server) => server.id === serverID);
+  const clientNames = new Map(clients.map((client) => [client.id, client.name]));
   const canFullMap = selectedServer?.platform !== "darwin";
   const load = async (id: string) => {
     const [clientResponse, mappingResponse] = await Promise.all([fetch(`/api/v1/servers/${id}/clients`), fetch(`/api/v1/servers/${id}/mappings`)]);
@@ -300,7 +301,10 @@ function MappingManager({ servers }: { servers: Server[] }) {
     </form>}
     <div className="mapping-list">{mappings.length === 0 ? <p className="empty">暂无映射。</p> : mappings.map((mapping) => <div className="mapping-row" key={mapping.id}>
       <strong>{mapping.mappingType === "full" ? `全映射 · ${mapping.publicIp}` : `${mapping.protocol.toUpperCase()} · ${mapping.publicIp}:${mapping.publicPort}`}</strong>
-      <span>{mapping.mappingType === "full" ? `→ ${mapping.targetHost} · 保留 ${mapping.excludedPorts || "无"}` : `→ ${mapping.targetHost}:${mapping.targetPort}`}</span>
+      <div className="mapping-target">
+        <span>{mapping.mappingType === "full" ? `→ ${mapping.targetHost} · 保留 ${mapping.excludedPorts || "无"}` : `→ ${mapping.targetHost}:${mapping.targetPort}`}</span>
+        <small title={mapping.clientId}>客户端：{clientNames.get(mapping.clientId) || mapping.clientId}</small>
+      </div>
       <span>优先级 {mapping.priority} <button className="compact" onClick={() => void setPriority(mapping, mapping.priority + 1)}>＋</button><button className="compact" onClick={() => void setPriority(mapping, mapping.priority - 1)}>－</button></span>
       <span className="mapping-access">{mapping.accessMode === "allowlist" ? `仅限 ${mapping.allowedIps}` : "公开访问"}</span>
       <span className={`status ${mapping.status === "effective" ? "online" : ""}`}>{mapping.status === "effective" ? "生效" : "被占用"} <button className="compact" onClick={() => { setFirewallError(""); setFirewallMapping(mapping); }}>防火墙</button><button className="danger compact" onClick={() => void remove(mapping)}>删除</button></span>
